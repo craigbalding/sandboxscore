@@ -1,0 +1,6 @@
+# Output files
+*.out
+
+# Local development
+agents/docs/
+CLAUDE.md
