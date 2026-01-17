@@ -11,33 +11,36 @@ Think of it as penetration testing for sandboxes. A firewall audit says "your ru
 ```bash
 # Clone and run
 git clone https://github.com/craigbalding/sandboxscore.git
-./sandboxscore/agents/run.sh
+cd sandboxscore && ./agents/run.sh
 
 # With options
-./sandboxscore/agents/run.sh --profile sensitive --format json
+./agents/run.sh --profile sensitive --format json
 ```
+
+**Default behavior**: Outbound network tests are disabled by default. Use `--enable-network-tests` to enable them. Output is redacted by default (no IPs, paths, or hostnames).
 
 ## Example Output
 
 ```
 SANDBOXSCORE: Coding Agents
 ================================================================
-Grade: C
+Scanner: v1.1.0 | Methodology: v1.0 | Profile: personal
+
+GRADE: C
 
 Categories:
-  Credentials:         B    (SSH keys blocked, keychain exposed)
-  Personal Data:       A+   (contacts/messages not accessible)
-  System Visibility:   C    (processes hidden, users enumerable)
-  Persistence:         A    (LaunchAgents blocked)
+  Credentials:         B
+  Personal Data:       A+
+  System Visibility:   C
+  Persistence:         A
+  Network:             A+
+  Intelligence:        C
 
-Intelligence:
-  Process Visibility:  C    (330 processes via lsof fallback)
-  Network Topology:    B    (local IPs visible, LAN scan blocked)
-  Network Egress:      D    (HTTP/DNS/localhost all reachable)
-  File Intelligence:   A    (databases blocked, no credential files)
-  Service Discovery:   B    (492 services enumerable, control blocked)
+Recommended Actions:
+  - shell_rc_write: Make RC files read-only in sandbox. Use immutable containers.
+  - keychain_items: Configure sandbox to block login keychain access. Use ephemeral credentials.
 
-Summary: 47 tests | 31 protected | 16 exposed
+Summary: 130 tests | 95 protected | 35 exposed
 ================================================================
 ```
 
@@ -102,9 +105,9 @@ The scanner runs unprivileged probes:
 
 **Why actual probes, not permission checks?** Sandboxes can report permissions that don't reflect reality. A file might show `rw-r--r--` but be blocked by seatbelt/seccomp. We test the syscall, not the metadata.
 
-**Side effects**: Read probes don't modify files. Write probes may update access/modification timestamps on tested files or directories—the same effect as any process touching those paths. Probe files are cleaned up immediately (when the sandbox allows deletion).
+**Non-destructive**: Read probes don't modify file content. Write probes may update access/modification timestamps on tested files or directories—the same effect as any process touching those paths. Probe files are cleaned up immediately (when the sandbox allows deletion). Use `--no-write-tests` to skip all write probes entirely.
 
-Stats only—never extracts actual content. See [METHODOLOGY.md](./METHODOLOGY.md) for details.
+**Stats only, redacted by default**: Output contains counts and status, never actual content. Identifiable values (IPs, paths, hostnames) are redacted by default. Use `--no-redact` if you need raw values. See [METHODOLOGY.md](./METHODOLOGY.md) for details.
 
 ## Contributing
 

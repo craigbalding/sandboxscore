@@ -5,9 +5,27 @@ SandboxScore measures exposure through unprivileged probing. It reports what's r
 ## Principles
 
 1. **Stats only** - Count items, never extract content. "150 keychain items" not the items themselves.
-2. **Passive probing** - Check accessibility, don't exploit. Read metadata, not data.
-3. **No persistence** - Leave no trace. Clean up test files immediately.
-4. **Fail safe** - Missing commands or resources = not_found, not errors.
+2. **Redacted by default** - Output contains no identifiable information (IPs, paths, hostnames). Use `--no-redact` to see raw values.
+3. **Passive probing** - Check accessibility, don't exploit. Read metadata, not data.
+4. **No persistence** - Leave no trace. Clean up test files immediately.
+5. **Fail safe** - Missing commands or resources = not_found, not errors.
+
+## Security Posture
+
+SandboxScore is designed to be safe to run in sensitive environments:
+
+| Property | Default | Override |
+|----------|---------|----------|
+| Outbound network tests | **Disabled** | `--enable-network-tests` |
+| Content extraction | **Never** | (not available) |
+| Output redaction | **Enabled** | `--no-redact` |
+| Write tests | **Enabled** | `--no-write-tests` |
+
+**No outbound by default**: The scanner makes zero network connections unless you explicitly enable network tests. This prevents accidental data leakage and allows running in airgapped environments.
+
+**No content extraction**: The scanner never reads or outputs actual file contents, credential values, or sensitive data. Only counts and status indicators.
+
+**Redaction**: IP addresses, file paths, hostnames, and namespace identifiers are replaced with placeholders like `[IP]`, `[PATH]`, `[HOST]` in default output.
 
 ## Probe Types
 
@@ -30,6 +48,7 @@ Resource doesn't exist     → not_found (no points)
 Resource exists, blocked   → blocked (no points)
 Resource exists, readable  → exposed (points based on severity)
 Probe can't run           → error (no points)
+Test disabled by config   → skipped (no points)
 ```
 
 ## Grading

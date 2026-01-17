@@ -22,10 +22,14 @@
 test_dns_system_resolver() {
     debug "test_dns_system_resolver: starting"
 
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+    local test_url="${base_url}/status/200"
+
     # Try to resolve via curl (uses system resolver)
     local result
     result=$(with_timeout 5 curl -s -o /dev/null -w "%{http_code}" \
-        --connect-timeout 3 "https://httpbin.org/status/200" 2>/dev/null)
+        --connect-timeout 3 "$test_url" 2>/dev/null)
 
     if [[ "$result" == "200" ]]; then
         debug "test_dns_system_resolver: works"
@@ -134,8 +138,7 @@ scan_egress_dns() {
 
     # Test DoH (bypass capability)
     local doh_provider
-    doh_provider=$(test_dns_doh)
-    if [[ $? -eq 0 ]]; then
+    if doh_provider=$(test_dns_doh); then
         methods="${methods:+$methods+}doh:$doh_provider"
         status="exposed"
         severity="medium"  # DoH = can bypass DNS filtering
@@ -290,18 +293,25 @@ scan_egress_proxy() {
 test_http_connectivity() {
     debug "test_http_connectivity: starting"
 
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+    # Extract host for http test (strip https:// prefix)
+    local host="${base_url#https://}"
+    host="${host#http://}"
+    host="${host%%/*}"  # Remove path if any
+
     local results=""
 
     # HTTP
     local http_code
     http_code=$(with_timeout 5 curl -s -o /dev/null -w "%{http_code}" \
-        --connect-timeout 3 "http://httpbin.org/status/200" 2>/dev/null)
+        --connect-timeout 3 "http://${host}/status/200" 2>/dev/null)
     [[ "$http_code" == "200" ]] && results="http"
 
     # HTTPS
     local https_code
     https_code=$(with_timeout 5 curl -s -o /dev/null -w "%{http_code}" \
-        --connect-timeout 3 "https://httpbin.org/status/200" 2>/dev/null)
+        --connect-timeout 3 "https://${host}/status/200" 2>/dev/null)
     [[ "$https_code" == "200" ]] && results="${results:+$results+}https"
 
     echo "$results"
@@ -311,9 +321,12 @@ test_http_connectivity() {
 test_http_post() {
     debug "test_http_post: starting"
 
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+
     local result
     result=$(with_timeout 5 curl -s -X POST -d "test=data" \
-        --connect-timeout 3 "https://httpbin.org/post" 2>/dev/null)
+        --connect-timeout 3 "${base_url}/post" 2>/dev/null)
 
     if [[ -n "$result" && "$result" == *"test"* ]]; then
         debug "test_http_post: works"
@@ -328,11 +341,18 @@ test_http_post() {
 test_raw_tcp() {
     debug "test_raw_tcp: starting"
 
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+    # Extract host from URL
+    local host="${base_url#https://}"
+    host="${host#http://}"
+    host="${host%%/*}"  # Remove path if any
+
     local ports_open=""
 
     # Test common ports using bash /dev/tcp
     for port in 80 443 8080 8443 22; do
-        if timeout 2 bash -c "echo >/dev/tcp/httpbin.org/$port" 2>/dev/null; then
+        if timeout 2 bash -c "echo >/dev/tcp/${host}/$port" 2>/dev/null; then
             ports_open="${ports_open:+$ports_open+}$port"
             debug "test_raw_tcp: port $port open"
         fi
@@ -642,6 +662,13 @@ scan_egress_internal() {
 scan_egress_bypass() {
     debug "scan_egress_bypass: starting"
 
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+    # Extract host from URL
+    local host="${base_url#https://}"
+    host="${host#http://}"
+    host="${host%%/*}"  # Remove path if any
+
     local capabilities=""
     local status="blocked"
     local severity="low"
@@ -656,11 +683,11 @@ scan_egress_bypass() {
 
     # Alt port bypass - if 80/443 blocked but 8080/8443 work
     local std_ports
-    std_ports=$(with_timeout 3 bash -c 'echo >/dev/tcp/httpbin.org/443' 2>/dev/null && echo "443")
+    std_ports=$(with_timeout 3 bash -c "echo >/dev/tcp/${host}/443" 2>/dev/null && echo "443")
 
     if [[ -z "$std_ports" ]]; then
         # Standard ports blocked, try alternates
-        if timeout 2 bash -c 'echo >/dev/tcp/httpbin.org/8080' 2>/dev/null; then
+        if timeout 2 bash -c "echo >/dev/tcp/${host}/8080" 2>/dev/null; then
             capabilities="${capabilities:+$capabilities+}alt_port:8080"
             status="exposed"
             severity="medium"

@@ -60,27 +60,39 @@ fi
 run_intelligence_tests() {
     debug "run_intelligence_tests: starting (darwin)"
 
-    # Phase 1: Process Intelligence
+    # Phase 1: Process Intelligence (safe - no outbound)
     if type run_intel_processes_tests &>/dev/null; then
         run_intel_processes_tests
     fi
 
-    # Phase 2: Network Topology
+    # Phase 2: Network Topology (safe - local only)
     if type run_intel_network_tests &>/dev/null; then
         run_intel_network_tests
     fi
 
-    # Phase 3: Network Egress
-    if type run_intel_egress_tests &>/dev/null; then
-        run_intel_egress_tests
+    # Phase 3: Network Egress (makes outbound connections - opt-in only)
+    if [[ "${SANDBOXSCORE_NETWORK_TESTS:-0}" == "1" ]]; then
+        if type run_intel_egress_tests &>/dev/null; then
+            run_intel_egress_tests
+        fi
+    else
+        # Emit skipped status for transparency
+        progress_start "intel_egress"
+        emit "intelligence" "egress_dns" "skipped" "network_tests_disabled" "info"
+        emit "intelligence" "egress_proxy" "skipped" "network_tests_disabled" "info"
+        emit "intelligence" "egress_connectivity" "skipped" "network_tests_disabled" "info"
+        emit "intelligence" "egress_destinations" "skipped" "network_tests_disabled" "info"
+        emit "intelligence" "egress_internal" "skipped" "network_tests_disabled" "info"
+        emit "intelligence" "egress_bypass" "skipped" "network_tests_disabled" "info"
+        progress_end "intel_egress"
     fi
 
-    # Phase 4: File Intelligence
+    # Phase 4: File Intelligence (safe - no outbound)
     if type run_intel_files_tests &>/dev/null; then
         run_intel_files_tests
     fi
 
-    # Phase 5: Service Intelligence
+    # Phase 5: Service Intelligence (safe - no outbound)
     if type run_intel_services_tests &>/dev/null; then
         run_intel_services_tests
     fi

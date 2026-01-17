@@ -33,9 +33,17 @@ file_readable() {
 }
 
 # Check if a file is writable (actually tests write, not just permission bits)
+# Respects SANDBOXSCORE_NO_WRITE_TESTS to skip write probes
 file_writable() {
     local file="$1"
     [[ -f "$file" ]] || return 1
+
+    # Skip write test if --no-write-tests is set
+    if [[ "${SANDBOXSCORE_NO_WRITE_TESTS:-0}" == "1" ]]; then
+        # Fall back to permission bit check only (less accurate but non-destructive)
+        [[ -w "$file" ]] && return 0
+        return 1
+    fi
 
     # Actually test write capability by appending nothing
     # This tests the syscall without modifying content
@@ -47,10 +55,18 @@ file_writable() {
 
 # Check if a directory is writable (actually tests write, not just permission bits)
 # Uses unique probe filename for each call (sandboxes may allow create but block delete)
+# Respects SANDBOXSCORE_NO_WRITE_TESTS to skip write probes
 _dir_writable_counter=0
 dir_writable() {
     local dir="$1"
     [[ -d "$dir" ]] || return 1
+
+    # Skip write test if --no-write-tests is set
+    if [[ "${SANDBOXSCORE_NO_WRITE_TESTS:-0}" == "1" ]]; then
+        # Fall back to permission bit check only (less accurate but non-destructive)
+        [[ -w "$dir" ]] && return 0
+        return 1
+    fi
 
     # Use unique probe name (counter + pid) for each call
     _dir_writable_counter=$((_dir_writable_counter + 1))
@@ -1437,7 +1453,9 @@ scan_outbound_http() {
         return
     fi
 
-    local test_url="https://httpbin.org/status/200"
+    # Use custom target if specified, otherwise default to httpbin.org
+    local base_url="${SANDBOXSCORE_NETWORK_TARGET:-https://httpbin.org}"
+    local test_url="${base_url}/status/200"
     local success=0
 
     if [[ "$http_cmd" == "curl" ]]; then

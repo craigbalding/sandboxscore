@@ -74,7 +74,7 @@ die() {
 # CONSTANTS
 # =============================================================================
 
-readonly SCANNER_VERSION="1.0.0"
+readonly SCANNER_VERSION="1.1.0"
 readonly METHODOLOGY_VERSION="1.0"
 
 # Field delimiter for findings storage
@@ -173,8 +173,90 @@ with_timeout() {
 }
 
 # Default timeout for external commands (seconds)
-readonly DEFAULT_TIMEOUT=10
+# Can be overridden via --timeout flag or SANDBOXSCORE_TIMEOUT env var
+DEFAULT_TIMEOUT="${SANDBOXSCORE_TIMEOUT:-10}"
 readonly SQLITE_TIMEOUT=5
+
+# =============================================================================
+# REDACTION FUNCTIONS
+# =============================================================================
+
+# Redaction is ON by default to prevent accidental identifier leakage
+# Use --no-redact to disable (e.g., for debugging)
+REDACT_ENABLED="${SANDBOXSCORE_REDACT:-1}"
+
+# Redact sensitive values from output
+# Usage: redact_value "value" [type]
+# Types: auto, ip, hostname, path, namespace, count
+redact_value() {
+    local val="$1"
+    local type="${2:-auto}"
+
+    # If redaction disabled, return value as-is
+    [[ "$REDACT_ENABLED" != "1" ]] && { echo "$val"; return; }
+
+    # Empty values pass through
+    [[ -z "$val" ]] && { echo ""; return; }
+
+    case "$type" in
+        ip)
+            echo "[IP]"
+            ;;
+        hostname)
+            echo "[HOST]"
+            ;;
+        path)
+            echo "[PATH]"
+            ;;
+        namespace|ns)
+            echo "[NS]"
+            ;;
+        count)
+            # Counts are safe to show
+            echo "$val"
+            ;;
+        auto)
+            # Auto-detect and redact sensitive patterns
+            local redacted="$val"
+
+            # Replace embedded IP addresses (IPv4) anywhere in the string
+            # Pattern: digits.digits.digits.digits (at least 7 chars like 1.1.1.1)
+            if [[ "$redacted" =~ [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+                # Use sed to replace all IPs
+                redacted=$(echo "$redacted" | sed -E 's/[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[IP]/g')
+            fi
+
+            # Handle absolute paths at start of string
+            if [[ "$redacted" =~ ^/ ]]; then
+                # Allow high-level path indicators
+                case "$redacted" in
+                    /etc/*)       redacted="/etc/..." ;;
+                    /tmp/*)       redacted="/tmp/..." ;;
+                    /var/*)       redacted="/var/..." ;;
+                    /Users/*)     redacted="\$HOME/..." ;;
+                    /home/*)      redacted="\$HOME/..." ;;
+                    *)            redacted="[PATH]" ;;
+                esac
+            fi
+
+            # K8s namespaces (often contain project/team names)
+            if [[ "$redacted" =~ ns:[a-zA-Z0-9_-]+ ]]; then
+                redacted=$(echo "$redacted" | sed -E 's/ns:[a-zA-Z0-9_-]+/ns:[NS]/g')
+            fi
+
+            # Hostnames that look like FQDNs (be conservative)
+            if [[ "$redacted" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                redacted="[HOST]"
+            fi
+
+            echo "$redacted"
+            ;;
+        *)
+            # Unknown type, pass through
+            echo "$val"
+            ;;
+    esac
+}
 
 # =============================================================================
 # PROGRESS OUTPUT FUNCTIONS
@@ -504,7 +586,7 @@ emit() {
 
     # Validate status
     case "$status" in
-        exposed|blocked|not_found|error) ;;
+        exposed|blocked|not_found|error|skipped) ;;
         *)
             warn "Unknown status '$status' for $test_name, treating as error"
             status="error"
@@ -513,6 +595,9 @@ emit() {
 
     # Sanitize value (remove delimiter chars)
     value=$(sanitize_value "$value")
+
+    # Apply redaction to value (ON by default)
+    value=$(redact_value "$value")
 
     # Get effective severity (may be overridden by profile)
     local severity
@@ -781,6 +866,64 @@ calculate_grade_for_profile() {
 }
 
 # =============================================================================
+# CI/CD POLICY FUNCTIONS
+# =============================================================================
+
+# Check fail-on policy
+# Returns: 0 if policy passes, 1 if policy fails
+# Policy formats:
+#   grade<=GRADE  - fail if grade is worse than or equal to threshold (e.g., grade<=C)
+#   score>=N      - fail if points lost is >= threshold
+#   exposures>=N  - fail if number of exposed findings is >= threshold
+check_fail_policy() {
+    local policy="$1"
+    local grade points summary total blocked exposed
+
+    grade=$(calculate_grade)
+    points=$(calculate_points)
+    summary=$(get_summary)
+
+    # Parse summary: total|blocked|exposed
+    total=$(echo "$summary" | cut -d'|' -f1)
+    blocked=$(echo "$summary" | cut -d'|' -f2)
+    exposed=$(echo "$summary" | cut -d'|' -f3)
+
+    # Parse policy
+    case "$policy" in
+        grade\<=*)
+            local threshold="${policy#grade<=}"
+            # Fail if grade is worse than or equal to threshold
+            if grade_worse_or_equal "$grade" "$threshold"; then
+                debug "check_fail_policy: grade $grade is <= $threshold"
+                return 1
+            fi
+            ;;
+        score\>=*)
+            local threshold="${policy#score>=}"
+            threshold=$(to_int "$threshold")
+            if [[ "$points" -ge "$threshold" ]]; then
+                debug "check_fail_policy: score $points >= $threshold"
+                return 1
+            fi
+            ;;
+        exposures\>=*)
+            local threshold="${policy#exposures>=}"
+            threshold=$(to_int "$threshold")
+            if [[ "$exposed" -ge "$threshold" ]]; then
+                debug "check_fail_policy: exposures $exposed >= $threshold"
+                return 1
+            fi
+            ;;
+        *)
+            warn "Unknown fail-on policy format: $policy"
+            return 0
+            ;;
+    esac
+
+    return 0
+}
+
+# =============================================================================
 # OUTPUT FUNCTIONS
 # =============================================================================
 
@@ -916,7 +1059,8 @@ output_json() {
       "personal_data": "$(calculate_category_grade personal_data)",
       "system_visibility": "$(calculate_category_grade system_visibility)",
       "persistence": "$(calculate_category_grade persistence)",
-      "network": "$(calculate_category_grade network)"
+      "network": "$(calculate_category_grade network)",
+      "intelligence": "$(calculate_category_grade intelligence)"
     },
     "caps": [$caps_json],
     "summary": {"total": $total, "protected": $blocked, "exposed": $exposed},
@@ -958,6 +1102,7 @@ output_human() {
     printf "  %-20s %s\n" "System Visibility:" "$(calculate_category_grade system_visibility)"
     printf "  %-20s %s\n" "Persistence:" "$(calculate_category_grade persistence)"
     printf "  %-20s %s\n" "Network:" "$(calculate_category_grade network)"
+    printf "  %-20s %s\n" "Intelligence:" "$(calculate_category_grade intelligence)"
     echo ""
 
     if [[ -n "$cap_reasons" ]]; then
@@ -995,6 +1140,27 @@ output_human() {
                 printf "  %s %-20s %s\n" "$icon" "$test_name" "$status"
             fi
         done <<< "$FINDINGS"
+    fi
+
+    # Show remediation hints for critical/high exposed findings
+    echo ""
+    echo "Recommended Actions:"
+    local shown=0
+    local has_hints=0
+    while IFS="$FIELD_SEP" read -r category test_name status value severity points; do
+        [[ -z "$category" ]] && continue
+        [[ "$status" != "exposed" ]] && continue
+        [[ "$severity" != "critical" && "$severity" != "high" ]] && continue
+        local hint
+        hint=$(get_remediation "$test_name")
+        [[ -z "$hint" ]] && continue
+        printf "  - %s: %s\n" "$test_name" "$hint"
+        has_hints=1
+        shown=$((shown + 1))
+        [[ $shown -ge 5 ]] && break  # Cap at 5 hints
+    done <<< "$FINDINGS"
+    if [[ $has_hints -eq 0 ]]; then
+        echo "  (no critical/high findings with remediation hints)"
     fi
 
     echo ""
